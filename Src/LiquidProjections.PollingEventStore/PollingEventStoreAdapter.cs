@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using LiquidProjections.Abstractions;
 using LiquidProjections.NEventStore.Logging;
+using LiquidProjections.PollingEventStore.ThreadSafetyAttributes;
 
 namespace LiquidProjections.PollingEventStore
 {
@@ -18,13 +19,26 @@ namespace LiquidProjections.PollingEventStore
     /// </remarks>
     public class PollingEventStoreAdapter : IDisposable
     {
-        private readonly TimeSpan pollInterval;
-        private readonly int maxPageSize;
-        private readonly Func<DateTime> getUtcNow;
-        private readonly IPassiveEventStore eventStore;
+        [FieldProtectedByMonitorLock(nameof(subscriptionLock))]
         internal readonly HashSet<Subscription> subscriptions = new HashSet<Subscription>();
-        private volatile bool isDisposed;
+
+        [ImmutableField]
         internal readonly object subscriptionLock = new object();
+
+        [ImmutableField]
+        private readonly TimeSpan pollInterval;
+
+        [ImmutableField]
+        private readonly int maxPageSize;
+
+        [ThreadSafeDelegateValue]
+        private readonly Func<DateTime> getUtcNow;
+
+        private readonly IPassiveEventStore eventStore;
+
+        [FieldProtectedByMonitorLock(nameof(subscriptionLock))]
+        private volatile bool isDisposed;
+
         private Task<Page> currentLoader;
 
         /// <summary>
@@ -55,8 +69,12 @@ namespace LiquidProjections.PollingEventStore
         /// <param name="getUtcNow">
         /// Provides the current date and time in UTC.
         /// </param>
-        public PollingEventStoreAdapter(IPassiveEventStore eventStore, int cacheSize, TimeSpan pollInterval, int maxPageSize,
-            Func<DateTime> getUtcNow)
+        public PollingEventStoreAdapter(
+            IPassiveEventStore eventStore,
+            int cacheSize,
+            TimeSpan pollInterval,
+            int maxPageSize,
+            [ThreadSafeDelegateValue] Func<DateTime> getUtcNow)
         {
             this.eventStore = eventStore;
             this.pollInterval = pollInterval;
@@ -370,8 +388,10 @@ namespace LiquidProjections.PollingEventStore
 
                 if (transactionCacheByPreviousCheckpoint != null)
                 {
-                    /* Add to cache in reverse order to prevent other projectors
-                        from requesting already loaded transactions which are not added to cache yet. */
+                    /*
+                     * Add to cache in reverse order to prevent other projectors
+                     * from requesting already loaded transactions which are not added to cache yet.
+                     */
                     for (int index = transactions.Count - 1; index > 0; index--)
                     {
                         transactionCacheByPreviousCheckpoint.Set(transactions[index - 1].Checkpoint, transactions[index]);
@@ -402,6 +422,10 @@ namespace LiquidProjections.PollingEventStore
             return new Page(previousCheckpoint, transactions);
         }
 
+        /// <remarks>
+        /// All started subscriptions are completed when the instance is disposed for the first time.
+        /// No new subscriptions can be started after the instance has been disposed.
+        /// </remarks>
         public void Dispose()
         {
             lock (subscriptionLock)
@@ -440,6 +464,8 @@ namespace LiquidProjections.PollingEventStore
     /// </summary>
     public interface IPassiveEventStore
     {
+        [ThreadChangeSafeMethod]
+        [return: ExclusiveMutableReturnValue]
         IEnumerable<Transaction> GetFrom(long? checkpoint);
     }
 }
