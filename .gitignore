@@ -179,3 +179,4 @@ Artifacts/**
 Build/**
 !Build/packages.config
 Tools/**
+.vs/
